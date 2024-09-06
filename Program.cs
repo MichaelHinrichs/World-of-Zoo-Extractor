@@ -1,80 +1,147 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+
+class BinaryReaderBE : BinaryReader
+{
+    public BinaryReaderBE(System.IO.Stream stream) : base(stream) {}
+
+    public override Int16 ReadInt16()
+    {
+        var data = base.ReadBytes(2);
+        Array.Reverse(data);
+        return BitConverter.ToInt16(data, 0);
+    }
+    public override Int32 ReadInt32()
+    {
+        var data = base.ReadBytes(4);
+        Array.Reverse(data);
+        return BitConverter.ToInt32(data, 0);
+    }
+
+    public override Int64 ReadInt64()
+    {
+        var data = base.ReadBytes(8);
+        Array.Reverse(data);
+        return BitConverter.ToInt64(data, 0);
+    }
+
+    public override UInt16 ReadUInt16()
+    {
+        var data = base.ReadBytes(2);
+        Array.Reverse(data);
+        return BitConverter.ToUInt16(data, 0);
+    }
+
+    public override UInt32 ReadUInt32()
+    {
+        var data = base.ReadBytes(4);
+        Array.Reverse(data);
+        return BitConverter.ToUInt32(data, 0);
+    }
+
+    public override UInt64 ReadUInt64()
+    {
+        var data = base.ReadBytes(8);
+        Array.Reverse(data);
+        return BitConverter.ToUInt64(data, 0);
+    }
+
+}
 
 namespace World_of_Zoo_Extractor
 {
     class Program
     {
         static BinaryReader br;
+
         static void Main(string[] args)
         {
-            br = new(File.OpenRead(args[0]));
-            br.ReadInt64();
-            int block1Size = br.ReadInt32();
-            int block2Size = br.ReadInt32();
+            FileStream fin = File.OpenRead(args[0]); //come and see him
 
-            List<Block1> block1 = new();
-            for (int i = 0; i < block1Size; i++)
+            br = new BinaryReader(fin);
+
+            if (br.ReadUInt32() == 0)
             {
-                block1.Add(new());
+                Console.WriteLine($"{args[0]}: little endian");
+            } else
+            {
+                Console.WriteLine($"{args[0]}: big endian");
+                br = new BinaryReaderBE(fin);
             }
 
-            List<Block2> block2 = new();
-            for (int i = 0; i < block2Size; i++)
+            br.ReadUInt32();
+            uint groupCount = br.ReadUInt32();
+            uint fileCount = br.ReadUInt32();
+
+            Console.WriteLine($"groups: {groupCount}, files: {fileCount}");
+
+            List<PkgGroup> groups= new();
+            for (int i = 0; i < groupCount; i++)
             {
-                block2.Add(new());
+                groups.Add(new());
             }
 
-            int fileTable = (int)br.BaseStream.Position;
-
-            foreach (Block2 file in block2)
+            List<PkgFile> files = new();
+            for (int i = 0; i < fileCount; i++)
             {
-                br.BaseStream.Position = file.start + fileTable;
-                string firstName = file.name.Substring(0, file.name.LastIndexOf('\0'));
-                string secondName = file.name.Substring(firstName.Length + 1);
-                Directory.CreateDirectory(Path.GetDirectoryName(args[0]) + "\\" + Path.GetDirectoryName(firstName));
+                files.Add(new());
+            }
+
+            long fileTable = br.BaseStream.Position;
+            Console.WriteLine(fileTable);
+
+            foreach (PkgFile file in files)
+            {
+                br.BaseStream.Position = fileTable + file.start;
+                string name = new string(file.name);
+                name = name.Substring(0, name.IndexOf('\0'));
+
+                Console.WriteLine($"{name}: isCompressed={file.isCompressed}, compressedSize={file.compressedSize}, uncompressedSize={file.uncompressedSize}");
+
+                Directory.CreateDirectory(Path.GetDirectoryName(name));
 
                 MemoryStream ms = new();
                 if (file.isCompressed == 1)
                 {
-                    br.ReadInt16();
-                    using var ds = new DeflateStream(new MemoryStream(br.ReadBytes(file.size)), CompressionMode.Decompress);
+                    br.ReadInt16(); //skip zlib header
+                    DeflateStream ds = new DeflateStream(new MemoryStream(br.ReadBytes((int)file.compressedSize)), CompressionMode.Decompress);
                     ds.CopyTo(ms);
                     ds.Close();
+
                 }
                 else if (file.isCompressed == 0)
-                    ms.Write(br.ReadBytes(file.size));
+                    ms.Write(br.ReadBytes((int)file.uncompressedSize));
                 else
                     throw new System.Exception("Fuck!");
 
-                BinaryReader msr = new(ms);
-                msr.BaseStream.Position = 0;
+                FileStream fout = File.OpenWrite(name);
+                ms.Position = 0;
+                ms.CopyTo(fout);
 
-                BinaryWriter bw = new BinaryWriter(File.OpenWrite(Path.GetDirectoryName(args[0]) + "\\" + firstName));
-                bw.Write(msr.ReadBytes(file.size));
-                msr.Close();
-                bw.Close();
+                fout.Close();
+                ms.Close();
             }
         }
 
-        class Block1
+        class PkgGroup
         {
-            int number = br.ReadInt32();
-            string name = new (new string (br.ReadChars(32)).TrimEnd((char)0x00));
-            int unknown = br.ReadInt32();
+            public UInt32 number = br.ReadUInt32();
+            public char[] name = br.ReadChars(32);
+            public UInt32 unknown1 = br.ReadUInt32();
         }
 
-        class Block2
+        class PkgFile
         {
-            int number = br.ReadInt32();
-            public string name = new(new string(br.ReadChars(256)).TrimEnd((char)0x00));
-            public int start = br.ReadInt32();
-            public int size = br.ReadInt32();
-            int sizeMinus0x0BForSomeReason = br.ReadInt32();
-            long unknown = br.ReadInt64();
-            public int isCompressed = br.ReadInt32();
-            int block1 = br.ReadInt32();
+            public UInt32 number = br.ReadUInt32();
+            public char[] name = br.ReadChars(256);
+            public UInt32 start = br.ReadUInt32();
+            public UInt32 compressedSize = br.ReadUInt32();
+            public UInt32 uncompressedSize = br.ReadUInt32();
+            public UInt64 unknown1 = br.ReadUInt64(); //maybe hash
+            public UInt32 isCompressed = br.ReadUInt32();
+            public UInt32 group = br.ReadUInt32();
         }
     }
 }
